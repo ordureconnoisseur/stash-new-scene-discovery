@@ -29,7 +29,7 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
-            flex-wrap: wrap;
+            flex-wrap: nowrap;
             gap: 20px;
             position: sticky;
             top: 0;
@@ -46,12 +46,14 @@
             margin: 0;
             font-size: 1.5rem;
             color: #fff;
+            white-space: nowrap;
         }
 
         .header-controls {
             display: flex;
             gap: 20px;
             align-items: center;
+            flex-shrink: 0;
         }
         
         .toggle-container {
@@ -96,14 +98,23 @@
             color: var(--bg-color);
         }
 
-        .search-container {
+        .search-container,
+        .tag-filter-control {
             position: relative;
             flex-grow: 1;
-            max-width: 500px;
+            min-width: 120px;
+            max-width: 300px;
+        }
+
+        @media (max-width: 850px) {
+            .header {
+                flex-wrap: wrap;
+            }
         }
 
         .search-input {
             width: 100%;
+            box-sizing: border-box;
             padding: 8px 12px;
             background-color: #252525;
             border: 1px solid var(--border-color);
@@ -171,6 +182,44 @@
             gap: 8px;
             margin-top: 10px;
             padding: 0 40px;
+        }
+
+        .tag-filter-control {
+            display: flex;
+        }
+
+        .tag-filter-mode {
+            flex: 0 0 38px;
+            padding: 0;
+            background-color: #252525;
+            border: 1px solid var(--border-color);
+            border-left: 0;
+            border-radius: 0 4px 4px 0;
+            color: var(--accent-color);
+            cursor: pointer;
+            font-size: 1.25rem;
+            font-weight: bold;
+        }
+
+        .tag-filter-mode.exclude {
+            color: #ff808a;
+        }
+
+        .tag-filter-control .search-input {
+            min-width: 0;
+            border-radius: 4px 0 0 4px;
+        }
+
+        .tag-pill-include {
+            border-color: var(--accent-color);
+        }
+
+        .tag-pill-exclude {
+            border-color: #dc3545;
+        }
+
+        .tag-pill-exclude .pill-label {
+            color: #ff808a;
         }
 
         .pill {
@@ -318,6 +367,7 @@
             font-size: 0.85rem;
             color: #888;
             margin-right: 10px;
+            white-space: nowrap;
         }
     </style>
 </head>
@@ -331,6 +381,12 @@
         <div class="search-container">
             <input type="text" id="performer-search" class="search-input" placeholder="Search performers in feed..." oninput="handleSearchInput(this.value)" onfocus="handleSearchInput(this.value)">
             <div id="search-results" class="search-dropdown"></div>
+        </div>
+
+        <div class="tag-filter-control">
+            <input type="text" id="tag-search" class="search-input" placeholder="Filter by tags..." oninput="handleTagSearchInput(this.value)" onfocus="handleTagSearchInput(this.value)">
+            <button id="tag-filter-mode" class="tag-filter-mode" type="button" data-mode="include" title="Include matching tags" aria-label="Tag mode: include" onclick="toggleTagFilterMode()">+</button>
+            <div id="tag-search-results" class="search-dropdown"></div>
         </div>
 
         <div class="header-controls">
@@ -352,6 +408,7 @@
     </div>
 
     <div id="pill-container" class="filter-pills"></div>
+    <div id="tag-pill-container" class="filter-pills"></div>
 
     <div class="container">
         <div class="homepage-new-scenes-grid" id="new-scenes-grid-content">
@@ -369,13 +426,16 @@
             defaultFavorites: false,
         };
 
-        const CACHE_KEY = 'hns_cached_scenes_v5';
+        const CACHE_KEY = 'hns_cached_scenes_v6';
         const CACHE_TTL = 12 * 60 * 60 * 1000;
 
         let allFetchedScenes = [];
         let localPerformerMap = new Map();
         let selectedPerformerIds = new Set();
         let performersInFeed = new Map();
+        const selectedIncludeTagIds = new Set();
+        const selectedExcludeTagIds = new Set();
+        const tagsInFeed = new Map();
 
         const performGraphQLQuery = async (endpoint, query, variables = {}, apiKey = null) => {
             const headers = { 'Content-Type': 'application/json' };
@@ -445,7 +505,7 @@
                 document.getElementById('status-text').textContent = `Querying StashDB (Batch ${Math.floor(i/chunkSize) + 1} of ${Math.ceil(performerIds.length/chunkSize)})...`;
                 let page = 1, hasMore = true;
                 while (hasMore) {
-                    const query = `query QueryScenes($input: SceneQueryInput!) { queryScenes(input: $input) { count scenes { id title release_date images { url } performers { performer { id name } } } } }`;
+                    const query = `query QueryScenes($input: SceneQueryInput!) { queryScenes(input: $input) { count scenes { id title release_date images { url } tags { id name } performers { performer { id name } } } } }`;
                     const result = await performGraphQLQuery('https://stashdb.org/graphql', query, { input: { date: { value: dateStr, modifier: "GREATER_THAN" }, performers: { value: batchIds, modifier: "INCLUDES" }, sort: "DATE", direction: "DESC", page: page, per_page: 100 } }, config.stashDBApiKey);
                     if (result?.queryScenes) {
                         allScenes.push(...result.queryScenes.scenes);
@@ -589,13 +649,153 @@
             }
         };
 
-        document.addEventListener('click', (e) => { if (!e.target.closest('.search-container')) document.getElementById('search-results').style.display = 'none'; });
+        const handleTagSearchInput = (value) => {
+            const dropdown = document.getElementById('tag-search-results');
+            const normalized = value.trim().toLowerCase();
+            const matches = Array.from(tagsInFeed.values())
+                .filter(tag => !normalized || tag.name.toLowerCase().includes(normalized))
+                .sort((a, b) => a.name.localeCompare(b.name));
+            renderTagSearchResults(matches);
+            dropdown.style.display = 'block';
+        };
+
+        const toggleTagFilterMode = () => {
+            const button = document.getElementById('tag-filter-mode');
+            const dropdown = document.getElementById('tag-search-results');
+            const dropdownWasOpen = dropdown.style.display === 'block';
+            const exclude = button.dataset.mode !== 'exclude';
+            button.dataset.mode = exclude ? 'exclude' : 'include';
+            button.textContent = exclude ? '−' : '+';
+            button.title = exclude ? 'Exclude matching tags' : 'Include matching tags';
+            button.setAttribute('aria-label', `Tag mode: ${exclude ? 'exclude' : 'include'}`);
+            button.classList.toggle('exclude', exclude);
+            if (dropdownWasOpen) handleTagSearchInput(document.getElementById('tag-search').value);
+        };
+
+        const renderTagSearchResults = (tags) => {
+            const dropdown = document.getElementById('tag-search-results');
+            dropdown.innerHTML = '';
+            const mode = document.getElementById('tag-filter-mode').dataset.mode;
+            const selectedInCurrentMode = mode === 'exclude' ? selectedExcludeTagIds : selectedIncludeTagIds;
+            const availableTags = tags.filter(tag => !selectedInCurrentMode.has(tag.id));
+            if (availableTags.length === 0) {
+                dropdown.innerHTML = '<div class="search-item" style="color: #666; cursor: default;">No tags found</div>';
+                return;
+            }
+            availableTags.forEach(tag => {
+                const item = document.createElement('div');
+                item.className = 'search-item';
+                item.textContent = tag.name;
+                item.onclick = () => {
+                    if (mode === 'exclude') {
+                        selectedIncludeTagIds.delete(tag.id);
+                        selectedExcludeTagIds.add(tag.id);
+                    } else {
+                        selectedExcludeTagIds.delete(tag.id);
+                        selectedIncludeTagIds.add(tag.id);
+                    }
+                    document.getElementById('tag-search').value = '';
+                    dropdown.style.display = 'none';
+                    renderTagPills();
+                    applyFilters();
+                };
+                dropdown.appendChild(item);
+            });
+        };
+
+        const renderTagPills = () => {
+            const container = document.getElementById('tag-pill-container');
+            container.innerHTML = '';
+            const addPill = (id, mode) => {
+                const tag = tagsInFeed.get(id);
+                if (!tag) return;
+                const pill = document.createElement('div');
+                pill.className = `pill tag-pill-${mode}`;
+                const label = document.createElement('span');
+                label.className = 'pill-label';
+                label.textContent = `${mode === 'include' ? '+' : '−'} ${tag.name}`;
+                const remove = document.createElement('span');
+                remove.className = 'pill-remove';
+                remove.textContent = '✕';
+                remove.addEventListener('click', () => {
+                    selectedIncludeTagIds.delete(id);
+                    selectedExcludeTagIds.delete(id);
+                    renderTagPills();
+                    applyFilters();
+                });
+                pill.appendChild(label);
+                pill.appendChild(remove);
+                container.appendChild(pill);
+            };
+            Array.from(selectedIncludeTagIds).sort((a, b) => tagsInFeed.get(a)?.name.localeCompare(tagsInFeed.get(b)?.name || '') || 0).forEach(id => addPill(id, 'include'));
+            Array.from(selectedExcludeTagIds).sort((a, b) => tagsInFeed.get(a)?.name.localeCompare(tagsInFeed.get(b)?.name || '') || 0).forEach(id => addPill(id, 'exclude'));
+            if (selectedIncludeTagIds.size > 0 || selectedExcludeTagIds.size > 0) {
+                const clear = document.createElement('div');
+                clear.className = 'pill';
+                clear.style.cursor = 'pointer';
+                clear.style.borderColor = 'var(--accent-color)';
+                clear.innerHTML = '<span style="color: var(--accent-color)">Clear Tag Filters</span>';
+                clear.onclick = () => {
+                    selectedIncludeTagIds.clear();
+                    selectedExcludeTagIds.clear();
+                    renderTagPills();
+                    applyFilters();
+                };
+                container.appendChild(clear);
+            }
+        };
+
+        const rebuildFeedIndexes = () => {
+            performersInFeed.clear();
+            tagsInFeed.clear();
+            allFetchedScenes.forEach(scene => {
+                scene.performers.forEach(p => {
+                    const lp = localPerformerMap.get(p.performer.id);
+                    if (lp) performersInFeed.set(lp.name, { id: lp.stash_id, image: lp.image });
+                });
+                (scene.tags || []).forEach(tag => tagsInFeed.set(tag.id, tag));
+            });
+            selectedIncludeTagIds.forEach(id => { if (!tagsInFeed.has(id)) selectedIncludeTagIds.delete(id); });
+            selectedExcludeTagIds.forEach(id => { if (!tagsInFeed.has(id)) selectedExcludeTagIds.delete(id); });
+            renderTagPills();
+        };
+
+        const restoreCachedScenes = (data) => {
+            if (!data.tags) return data.scenes;
+            const cachedTags = new Map(data.tags.map(([id, name]) => [id, { id, name }]));
+            return data.scenes.map(scene => ({
+                ...scene,
+                tags: (scene.tags || []).map(id => cachedTags.get(id)).filter(Boolean),
+            }));
+        };
+
+        const cacheScenes = (cacheStatus) => {
+            const scenes = allFetchedScenes.map(scene => ({
+                ...scene,
+                tags: (scene.tags || []).map(tag => tag.id),
+            }));
+            const tags = Array.from(tagsInFeed.values(), tag => [tag.id, tag.name]);
+            try {
+                localStorage.setItem(CACHE_KEY, JSON.stringify({ timestamp: Date.now(), scenes, tags, config: { days: config.defaultDateRange } }));
+            } catch (err) {
+                localStorage.removeItem(CACHE_KEY);
+                cacheStatus.textContent = 'Results too large to cache';
+                console.warn('Unable to cache scene results', err);
+            }
+        };
+
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('.search-container')) document.getElementById('search-results').style.display = 'none';
+            if (!e.target.closest('.tag-filter-control')) document.getElementById('tag-search-results').style.display = 'none';
+        });
 
         const applyFilters = () => {
             const favoritesOnly = document.getElementById('favorite-toggle').checked;
             let filtered = allFetchedScenes;
             if (selectedPerformerIds.size > 0) filtered = filtered.filter(s => s.performers.some(p => selectedPerformerIds.has(p.performer.id)));
             if (favoritesOnly) filtered = filtered.filter(s => s.isFavorite);
+            if (selectedIncludeTagIds.size > 0) filtered = filtered.filter(s => (s.tags || []).some(tag => selectedIncludeTagIds.has(tag.id)));
+            if (selectedExcludeTagIds.size > 0) filtered = filtered.filter(s => !(s.tags || []).some(tag => selectedExcludeTagIds.has(tag.id)));
             renderGrid(filtered);
             document.getElementById('status-text').textContent = `Showing ${filtered.length} scenes`;
         };
@@ -604,7 +804,7 @@
             const statusText = document.getElementById('status-text'), cacheStatus = document.getElementById('cache-status'), grid = document.getElementById('new-scenes-grid-content');
             grid.innerHTML = '<div class="loading-state">Loading...</div>';
             statusText.textContent = ''; cacheStatus.textContent = '';
-            ['hns_cached_scenes', 'hns_cached_scenes_v2', 'hns_cached_scenes_v3', 'hns_cached_scenes_v4'].forEach(k => localStorage.removeItem(k));
+            ['hns_cached_scenes', 'hns_cached_scenes_v2', 'hns_cached_scenes_v3', 'hns_cached_scenes_v4', 'hns_cached_scenes_v5'].forEach(k => localStorage.removeItem(k));
             try {
                 await initConfig();
                 document.getElementById('favorite-toggle').checked = config.defaultFavorites;
@@ -617,15 +817,11 @@
                     if (cached) {
                         const data = JSON.parse(cached);
                         if ((Date.now() - data.timestamp) < CACHE_TTL && data.config.days === config.defaultDateRange) {
-                            allFetchedScenes = data.scenes;
+                            allFetchedScenes = restoreCachedScenes(data);
                             const m = Math.floor((Date.now() - data.timestamp) / 60000);
                             cacheStatus.textContent = `Cached data from ${m > 60 ? Math.floor(m/60) + 'h' : m + 'm'} ago`;
                             await getPerformers(); 
-                            performersInFeed.clear();
-                            allFetchedScenes.forEach(s => s.performers.forEach(p => { 
-                                const lp = localPerformerMap.get(p.performer.id);
-                                if (lp) performersInFeed.set(lp.name, { id: lp.stash_id, image: lp.image }); 
-                            }));
+                            rebuildFeedIndexes();
                             applyFilters(); return;
                         }
                     }
@@ -635,7 +831,7 @@
                 const ownedSceneIds = await getOwnedScenes();
                 const cutoffDate = new Date(); cutoffDate.setDate(cutoffDate.getDate() - config.defaultDateRange);
                 let allNewScenes = await getNewScenesFromStashDB(Array.from(localPerformerMap.keys()), cutoffDate);
-                const performerSceneCounts = {}, sceneMap = new Map(); performersInFeed.clear();
+                const performerSceneCounts = {}, sceneMap = new Map();
                 allNewScenes.sort((a, b) => new Date(b.release_date) - new Date(a.release_date));
                 allNewScenes.forEach(scene => {
                     if (ownedSceneIds.has(scene.id)) return;
@@ -647,12 +843,12 @@
                             performerSceneCounts[pId] = (performerSceneCounts[pId] || 0) + 1;
                             if (performerSceneCounts[pId] > config.maxScenes) return;
                         }
-                        featuredLocal.forEach(p => performersInFeed.set(p.name, { id: p.stash_id, image: p.image }));
-                        sceneMap.set(scene.id, { id: scene.id, title: scene.title, release_date: scene.release_date, images: scene.images, displayPerformers: featuredLocal.map(p => p.name).join(', '), performers: scene.performers, isFavorite: featuredLocal.some(p => p.favorite) });
+                        sceneMap.set(scene.id, { id: scene.id, title: scene.title, release_date: scene.release_date, images: scene.images, tags: scene.tags || [], displayPerformers: featuredLocal.map(p => p.name).join(', '), performers: scene.performers, isFavorite: featuredLocal.some(p => p.favorite) });
                     }
                 });
                 allFetchedScenes = Array.from(sceneMap.values()).sort((a,b) => new Date(b.release_date) - new Date(a.release_date));
-                localStorage.setItem(CACHE_KEY, JSON.stringify({ timestamp: Date.now(), scenes: allFetchedScenes, config: { days: config.defaultDateRange } }));
+                rebuildFeedIndexes();
+                cacheScenes(cacheStatus);
                 applyFilters();
             } catch (err) { console.error(err); grid.innerHTML = '<div class="loading-state">Error loading. Refresh page.</div>'; }
         };

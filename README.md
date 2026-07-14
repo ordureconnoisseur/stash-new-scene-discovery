@@ -51,6 +51,7 @@ Click it to open the discovery page in a new tab. It shows a grid of recently re
 ![Filter Pills](screenshot-filter-pills.png)
 
 - **Favorites toggle** (♥) filters to only scenes featuring performers you have marked as a favourite in Stash
+- **Tag filters** let you include scenes with any selected StashDB tag or exclude scenes with unwanted tags. Choose Include or Exclude, search for a tag present in the feed, and remove its pill to clear it
 - **Refresh** forces a fresh fetch from StashDB, bypassing the cache
 - **Copy ID** (appears on hover) copies the StashDB scene ID to your clipboard for easy importing
 
